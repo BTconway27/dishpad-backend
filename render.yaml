@@ -1,0 +1,33 @@
+services:
+  - type: web
+    name: dishpad-api
+    runtime: python
+    buildCommand: pip install -r hosted_requirements.txt
+    startCommand: uvicorn hosted_main:app --host 0.0.0.0 --port $PORT
+    disk:
+      name: dishpad-data
+      mountPath: /data
+      sizeGB: 1
+    envVars:
+      - key: DB_PATH
+        value: /data/dishpad.db
+      - key: ANTHROPIC_API_KEY
+        sync: false
+      - key: STRIPE_SECRET_KEY
+        sync: false
+      - key: STRIPE_WEBHOOK_SECRET
+        sync: false
+      - key: SMTP_HOST
+        sync: false
+      - key: SMTP_PORT
+        value: "587"
+      - key: SMTP_USER
+        sync: false
+      - key: SMTP_PASSWORD
+        sync: false
+      - key: ADMIN_PASSWORD
+        sync: false
+      - key: DISHPAD_PRICE_CENTS
+        value: "800"
+      - key: FREE_CLIPS_PER_DAY
+        value: "5"
