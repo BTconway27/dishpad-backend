@@ -29,6 +29,7 @@ import io
 import json
 import time
 import uuid
+import hashlib
 import asyncio
 import secrets
 import sqlite3
@@ -116,12 +117,59 @@ def init_db() -> None:
             ip    TEXT    NOT NULL PRIMARY KEY,
             count INTEGER NOT NULL DEFAULT 0
         );
+
+        CREATE TABLE IF NOT EXISTS accounts (
+            id            INTEGER PRIMARY KEY AUTOINCREMENT,
+            email         TEXT    NOT NULL UNIQUE COLLATE NOCASE,
+            password_hash TEXT    NOT NULL,
+            password_salt TEXT    NOT NULL,
+            created_at    INTEGER NOT NULL
+        );
+
+        CREATE TABLE IF NOT EXISTS auth_sessions (
+            token      TEXT    NOT NULL PRIMARY KEY,
+            email      TEXT    NOT NULL COLLATE NOCASE,
+            created_at INTEGER NOT NULL,
+            expires_at INTEGER NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_sessions_email ON auth_sessions(email);
     """)
     conn.commit()
     conn.close()
 
 
 init_db()
+
+# ---------------------------------------------------------------------------
+# Helpers — password + session auth
+# ---------------------------------------------------------------------------
+
+def _hash_password(password: str, salt: str) -> str:
+    return hashlib.pbkdf2_hmac("sha256", password.encode(), salt.encode(), 260_000).hex()
+
+def _create_session(email: str) -> str:
+    token = secrets.token_hex(32)
+    now = int(time.time())
+    expires = now + 30 * 24 * 60 * 60  # 30 days
+    conn = get_db()
+    conn.execute(
+        "INSERT INTO auth_sessions (token, email, created_at, expires_at) VALUES (?, ?, ?, ?)",
+        (token, email.lower(), now, expires),
+    )
+    conn.commit()
+    conn.close()
+    return token
+
+def _get_session_email(token: str) -> Optional[str]:
+    if not token:
+        return None
+    conn = get_db()
+    row = conn.execute(
+        "SELECT email FROM auth_sessions WHERE token = ? AND expires_at > ?",
+        (token, int(time.time())),
+    ).fetchone()
+    conn.close()
+    return row[0] if row else None
 
 # ---------------------------------------------------------------------------
 # Helpers — admin auth
@@ -312,6 +360,17 @@ class SendUpdateRequest(BaseModel):
     subject: str
     body: str
 
+class AuthRegisterRequest(BaseModel):
+    email: str
+    password: str
+
+class AuthLoginRequest(BaseModel):
+    email: str
+    password: str
+
+class AuthSessionRequest(BaseModel):
+    token: str
+
 # ---------------------------------------------------------------------------
 # Health
 # ---------------------------------------------------------------------------
@@ -323,6 +382,80 @@ async def root():
 @app.get("/health")
 async def health():
     return {"status": "ok", "email_configured": bool(SMTP_HOST and SMTP_USER)}
+
+# ---------------------------------------------------------------------------
+# Auth endpoints
+# ---------------------------------------------------------------------------
+
+@app.post("/api/auth/register")
+@limiter.limit("5/minute")
+async def auth_register(request: Request, body: AuthRegisterRequest):
+    email = body.email.strip().lower()
+    password = body.password
+    if not email or "@" not in email:
+        raise HTTPException(status_code=400, detail="Valid email is required")
+    if len(password) < 8:
+        raise HTTPException(status_code=400, detail="Password must be at least 8 characters")
+    conn = get_db()
+    existing = conn.execute("SELECT id FROM accounts WHERE email = ?", (email,)).fetchone()
+    if existing:
+        conn.close()
+        raise HTTPException(status_code=409, detail="An account with that email already exists")
+    salt = secrets.token_hex(16)
+    pw_hash = _hash_password(password, salt)
+    conn.execute(
+        "INSERT INTO accounts (email, password_hash, password_salt, created_at) VALUES (?, ?, ?, ?)",
+        (email, pw_hash, salt, int(time.time())),
+    )
+    conn.commit()
+    row = conn.execute("SELECT id FROM accounts WHERE email = ?", (email,)).fetchone()
+    conn.close()
+    token = _create_session(email)
+    return {"access_token": token, "user_id": row[0], "email": email}
+
+
+@app.post("/api/auth/login")
+@limiter.limit("10/minute")
+async def auth_login(request: Request, body: AuthLoginRequest):
+    email = body.email.strip().lower()
+    password = body.password
+    if not email or not password:
+        raise HTTPException(status_code=400, detail="Email and password are required")
+    conn = get_db()
+    row = conn.execute(
+        "SELECT id, password_hash, password_salt FROM accounts WHERE email = ?", (email,)
+    ).fetchone()
+    conn.close()
+    if not row:
+        raise HTTPException(status_code=401, detail="Incorrect email or password")
+    pw_hash = _hash_password(password, row[2])
+    if pw_hash != row[1]:
+        raise HTTPException(status_code=401, detail="Incorrect email or password")
+    token = _create_session(email)
+    return {"access_token": token, "user_id": row[0], "email": email}
+
+
+@app.post("/api/auth/session")
+@limiter.limit("60/minute")
+async def auth_session(request: Request, body: AuthSessionRequest):
+    email = _get_session_email(body.token)
+    if not email:
+        raise HTTPException(status_code=401, detail="Session expired or invalid")
+    conn = get_db()
+    row = conn.execute("SELECT id FROM accounts WHERE email = ?", (email,)).fetchone()
+    conn.close()
+    user_id = row[0] if row else 0
+    return {"email": email, "user_id": user_id, "is_pro": is_email_pro(email)}
+
+
+@app.post("/api/auth/logout")
+@limiter.limit("30/minute")
+async def auth_logout(request: Request, body: AuthSessionRequest):
+    conn = get_db()
+    conn.execute("DELETE FROM auth_sessions WHERE token = ?", (body.token,))
+    conn.commit()
+    conn.close()
+    return {"ok": True}
 
 # ---------------------------------------------------------------------------
 # Payment endpoints
