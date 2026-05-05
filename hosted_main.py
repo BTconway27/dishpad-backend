@@ -79,6 +79,7 @@ WEBHOOK_SECRET    = os.environ.get("STRIPE_WEBHOOK_SECRET", "")
 ADMIN_PASSWORD    = os.environ.get("ADMIN_PASSWORD", "changeme")
 PRICE_CENTS       = int(os.environ.get("DISHPAD_PRICE_CENTS", "800"))
 FREE_CLIPS_PER_DAY = int(os.environ.get("FREE_CLIPS_PER_DAY", "5"))
+YOUTUBE_API_KEY   = os.environ.get("YOUTUBE_API_KEY", "")
 
 SMTP_HOST     = os.environ.get("SMTP_HOST", "")
 SMTP_PORT     = int(os.environ.get("SMTP_PORT", "587"))
@@ -1183,7 +1184,44 @@ def _ensure_ffmpeg_on_path() -> None:
         pass
 
 
+def _fetch_youtube_description_via_api(video_id: str) -> dict:
+    """Use YouTube Data API v3 to get title and description. Works from any IP."""
+    if not YOUTUBE_API_KEY:
+        return {}
+    try:
+        import urllib.request
+        import urllib.parse
+        params = urllib.parse.urlencode({
+            "id": video_id, "part": "snippet", "key": YOUTUBE_API_KEY,
+        })
+        req = urllib.request.urlopen(
+            f"https://www.googleapis.com/youtube/v3/videos?{params}", timeout=10
+        )
+        data = json.loads(req.read())
+        items = data.get("items", [])
+        if not items:
+            return {}
+        snippet = items[0].get("snippet", {})
+        return {
+            "title": snippet.get("title", ""),
+            "description": snippet.get("description", ""),
+            "thumbnail": (snippet.get("thumbnails", {}).get("high", {}) or
+                          snippet.get("thumbnails", {}).get("medium", {}) or {}).get("url", ""),
+            "chapters": [],
+        }
+    except Exception as exc:
+        print(f"[Dishpad] YouTube Data API failed: {exc}")
+        return {}
+
+
 def _fetch_youtube_metadata_sync(url: str) -> dict:
+    # Try YouTube Data API v3 first (works from any IP including cloud)
+    video_id_match = re.search(r"(?:v=|youtu\.be/)([A-Za-z0-9_-]{11})", url)
+    if video_id_match and YOUTUBE_API_KEY:
+        result = _fetch_youtube_description_via_api(video_id_match.group(1))
+        if result.get("title"):
+            return result
+    # Fall back to yt-dlp
     try:
         import yt_dlp
         ydl_opts = {
@@ -1921,11 +1959,16 @@ async def debug_youtube(url: str, x_admin_password: Optional[str] = Header(None)
             oembed_title = oe.json().get("title")
     except Exception as e:
         oembed_title = f"FAILED: {e}"
+    # Test YouTube Data API v3
+    yt_api_result = _fetch_youtube_description_via_api(video_id)
     return {
         "video_id": video_id,
+        "youtube_api_key_set": bool(YOUTUBE_API_KEY),
+        "youtube_api_title": yt_api_result.get("title"),
+        "youtube_api_desc_chars": len(yt_api_result.get("description") or ""),
+        "youtube_api_desc_sample": (yt_api_result.get("description") or "")[:200],
         "transcript_chars": len(transcript_result) if transcript_result else 0,
         "yt_dlp_title": metadata_result.get("title") if isinstance(metadata_result, dict) else None,
-        "yt_dlp_desc_chars": len(metadata_result.get("description") or "") if isinstance(metadata_result, dict) else 0,
         "page_scrape_title": page_title,
         "page_scrape_desc_chars": len(page_desc or ""),
         "oembed_title": oembed_title,
