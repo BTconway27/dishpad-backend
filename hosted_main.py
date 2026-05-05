@@ -1643,17 +1643,24 @@ async def clip_recipe(request: Request, body: ClipRequest):
         thumbnail   = yt_meta.get("thumbnail") or get_youtube_thumbnail(video_id)
 
         if not title or not description:
-            try:
-                async with httpx.AsyncClient(follow_redirects=True, timeout=15.0, headers={
-                    "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 Chrome/124.0 Safari/537.36",
-                    "Accept-Language": "en-US,en;q=0.9",
-                }) as hclient:
-                    resp = await hclient.get(url)
-                    page_info = get_youtube_page_info(resp.text)
-                    title       = title       or page_info.get("title")
-                    description = description or page_info.get("description")
-            except Exception:
-                pass
+            # Use mobile URL — works from datacenter IPs where desktop URL is blocked
+            mobile_url = f"https://m.youtube.com/watch?v={video_id}"
+            for _yt_url, _ua in [
+                (mobile_url, "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Mobile/15E148 Safari/604.1"),
+                (url, "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 Chrome/124.0 Safari/537.36"),
+            ]:
+                try:
+                    async with httpx.AsyncClient(follow_redirects=True, timeout=15.0, headers={
+                        "User-Agent": _ua, "Accept-Language": "en-US,en;q=0.9",
+                    }) as hclient:
+                        resp = await hclient.get(_yt_url)
+                        page_info = get_youtube_page_info(resp.text)
+                        title       = title       or page_info.get("title")
+                        description = description or page_info.get("description")
+                    if title and description:
+                        break
+                except Exception:
+                    pass
 
         if not transcript and not description and not frames:
             return {"error": "Couldn't find recipe content. Make sure the video is public and has captions or a description."}
@@ -1876,20 +1883,25 @@ async def debug_youtube(url: str, x_admin_password: Optional[str] = Header(None)
     )
     if isinstance(transcript_result, Exception): transcript_result = None
     if isinstance(metadata_result, Exception): metadata_result = {}
-    # Also test direct page scraping
+    # Also test direct page scraping via mobile URL
     page_title = None
     page_desc = None
-    try:
-        async with httpx.AsyncClient(follow_redirects=True, timeout=15.0, headers={
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/124.0.0.0 Safari/537.36",
-            "Accept-Language": "en-US,en;q=0.9",
-        }) as hc:
-            resp = await hc.get(url)
-            pi = get_youtube_page_info(resp.text)
-            page_title = pi.get("title")
-            page_desc = pi.get("description")
-    except Exception as e:
-        page_desc = f"FAILED: {e}"
+    for _test_url, _ua in [
+        (f"https://m.youtube.com/watch?v={video_id}", "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0) AppleWebKit/605.1.15 Mobile/15E148 Safari/604.1"),
+        (url, "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/124.0.0.0 Safari/537.36"),
+    ]:
+        try:
+            async with httpx.AsyncClient(follow_redirects=True, timeout=15.0, headers={
+                "User-Agent": _ua, "Accept-Language": "en-US,en;q=0.9",
+            }) as hc:
+                resp = await hc.get(_test_url)
+                pi = get_youtube_page_info(resp.text)
+                page_title = page_title or pi.get("title")
+                page_desc = page_desc or pi.get("description")
+            if page_title and page_desc:
+                break
+        except Exception as e:
+            page_desc = f"FAILED: {e}"
     # Test oEmbed
     oembed_title = None
     try:
