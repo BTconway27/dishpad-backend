@@ -1608,7 +1608,9 @@ async def clip_recipe(request: Request, body: ClipRequest):
 
     # Rate limiting — free tier gets FREE_CLIPS_PER_DAY per day per IP
     client_ip = get_client_ip(request)
-    if not is_email_pro(body.proEmail or ""):
+    admin_pw = request.headers.get("x-admin-password", "")
+    is_admin = bool(ADMIN_PASSWORD and admin_pw == ADMIN_PASSWORD)
+    if not is_admin and not is_email_pro(body.proEmail or ""):
         if not check_and_increment_free_usage(client_ip):
             return {"error": (
                 f"You've used your {FREE_CLIPS_PER_DAY} free recipe clips. "
