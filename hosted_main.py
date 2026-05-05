@@ -1186,7 +1186,10 @@ def _ensure_ffmpeg_on_path() -> None:
 def _fetch_youtube_metadata_sync(url: str) -> dict:
     try:
         import yt_dlp
-        ydl_opts = {"quiet": True, "no_warnings": True, "noplaylist": True, "skip_download": True}
+        ydl_opts = {
+            "quiet": True, "no_warnings": True, "noplaylist": True, "skip_download": True,
+            "extractor_args": {"youtube": {"player_client": ["web", "mweb", "android"]}},
+        }
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
             info = ydl.extract_info(url, download=False)
         return {
@@ -1221,6 +1224,7 @@ def _extract_youtube_frames_sync(url: str, n_frames: int = 8) -> list:
                 "outtmpl": video_path,
                 "external_downloader": "ffmpeg",
                 "external_downloader_args": {"ffmpeg_i": ["-t", "180"]},
+                "extractor_args": {"youtube": {"player_client": ["web", "mweb", "android"]}},
             }
             with yt_dlp.YoutubeDL(ydl_opts) as ydl:
                 ydl.download([url])
@@ -1735,6 +1739,8 @@ async def clip_recipe(request: Request, body: ClipRequest):
             url = source_url  # fall through to web path
 
     # ---- Standard web recipe ------------------------------------------------
+    html: Optional[str] = None
+    used_jina = False
     try:
         async with httpx.AsyncClient(
             follow_redirects=True, timeout=20.0,
@@ -1745,11 +1751,24 @@ async def clip_recipe(request: Request, body: ClipRequest):
             },
         ) as client:
             resp = await client.get(url)
+            if resp.status_code in (402, 403, 401, 429):
+                raise httpx.HTTPStatusError("blocked", request=resp.request, response=resp)
             resp.raise_for_status()
             html = resp.text
-    except httpx.HTTPStatusError as e:
-        return {"error": f"Could not fetch URL (HTTP {e.response.status_code})"}
-    except Exception:
+    except (httpx.HTTPStatusError, httpx.RequestError):
+        # Site blocks scrapers — try Jina AI Reader (free, bypasses anti-bot)
+        try:
+            import urllib.parse as _up
+            async with httpx.AsyncClient(timeout=30.0, headers={"Accept": "application/json"}) as jclient:
+                jresp = await jclient.get(f"https://r.jina.ai/{_up.quote(url, safe=':/?=&#')}")
+                jdata = jresp.json()
+                jcontent = jdata.get("data", {}).get("content") or ""
+                if len(jcontent) > 500:
+                    html = f"<html><body>{jcontent}</body></html>"
+                    used_jina = True
+        except Exception as je:
+            print(f"[Dishpad] Jina fallback failed: {je}")
+    if html is None:
         return {"error": "Could not reach that URL. Please check it and try again."}
 
     jsonld_recipe = extract_jsonld_recipe(html)
