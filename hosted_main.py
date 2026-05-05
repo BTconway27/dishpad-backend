@@ -1255,7 +1255,13 @@ def _extract_youtube_frames_sync(url: str, n_frames: int = 8) -> list:
 
 async def extract_youtube_frames(url: str) -> list:
     loop = asyncio.get_event_loop()
-    return await loop.run_in_executor(None, partial(_extract_youtube_frames_sync, url))
+    try:
+        return await asyncio.wait_for(
+            loop.run_in_executor(None, partial(_extract_youtube_frames_sync, url)),
+            timeout=30.0,
+        )
+    except (asyncio.TimeoutError, Exception):
+        return []
 
 
 def _fetch_transcript_sync(video_id: str) -> Optional[str]:
@@ -1402,6 +1408,42 @@ def is_pinterest_url(url: str) -> bool:
     return bool(re.search(r'pinterest\.com|pin\.it', url, re.I))
 
 
+def _fetch_social_metadata_html(url: str) -> dict:
+    """Fallback: scrape og: tags or TikTok oEmbed when yt-dlp fails."""
+    import urllib.request as _ur, ssl as _ssl, json as _json
+    ctx = _ssl.create_default_context()
+    mobile_ua = (
+        "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) "
+        "AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Mobile/15E148 Safari/604.1"
+    )
+    # TikTok: oEmbed API works from any IP and returns description/title
+    if "tiktok" in url.lower():
+        try:
+            import urllib.parse
+            oembed_url = "https://www.tiktok.com/oembed?url=" + urllib.parse.quote(url, safe="")
+            req = _ur.Request(oembed_url, headers={"User-Agent": "Mozilla/5.0"})
+            with _ur.urlopen(req, timeout=10, context=ctx) as r:
+                data = _json.loads(r.read())
+            title = data.get("title") or data.get("author_name") or ""
+            return {"title": title, "description": title, "thumbnail": data.get("thumbnail_url") or ""}
+        except Exception as e:
+            print(f"[Dishpad] TikTok oEmbed fallback failed: {e}")
+    # Generic og: tags fallback
+    try:
+        req = _ur.Request(url, headers={"User-Agent": mobile_ua, "Accept-Language": "en-US,en;q=0.9"})
+        with _ur.urlopen(req, timeout=15, context=ctx) as r:
+            html = r.read().decode("utf-8", errors="ignore")
+        from bs4 import BeautifulSoup as _BS
+        soup = _BS(html, "html.parser")
+        def _og(prop: str) -> str:
+            tag = soup.find("meta", {"property": f"og:{prop}"})
+            return (tag.get("content") or "") if tag else ""
+        return {"title": _og("title"), "description": _og("description"), "thumbnail": _og("image")}
+    except Exception as e:
+        print(f"[Dishpad] og: tag fallback failed: {e}")
+    return {}
+
+
 def _fetch_social_metadata_sync(url: str) -> dict:
     try:
         import yt_dlp
@@ -1415,7 +1457,7 @@ def _fetch_social_metadata_sync(url: str) -> dict:
         }
     except Exception as exc:
         print(f"[Dishpad] yt-dlp social metadata failed: {exc}")
-        return {}
+        return _fetch_social_metadata_html(url)
 
 
 async def fetch_social_metadata(url: str) -> dict:
