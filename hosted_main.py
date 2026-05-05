@@ -1643,9 +1643,9 @@ def _get_pinterest_source_url_sync(pin_url: str) -> Optional[str]:
         content_text = jdata.get("data", {}).get("content") or ""
         # Look for external recipe links in the Jina content
         recipe_patterns = [
-            r'https?://(?!(?:www\.)?pinterest\.com)[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}/[^\s\)"'<>]{10,}(?:recipe|cook|food|eat|dish|meal|bake|ingredient)[^\s\)"'<>]*',
-            r'\[(?:Visit|Source|Original|Click|Read)[^\]]*\]\((https?://[^\)]+)\)',
-            r'https?://(?!(?:www\.)?pinterest\.com)(?:[a-zA-Z0-9.-]+\.){1,3}[a-zA-Z]{2,}/[^\s\)"'<>]{10,}',
+            r"https?://(?!(?:www\.)?pinterest\.com)[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}/\S{10,}(?:recipe|cook|food|eat|dish|meal|bake|ingredient)\S*",
+            r"\[(?:Visit|Source|Original|Click|Read)[^\]]*\]\((https?://[^)]+)\)",
+            r"https?://(?!(?:www\.)?pinterest\.com)(?:[a-zA-Z0-9.-]+\.){1,3}[a-zA-Z]{2,}/\S{10,}",
         ]
         for pat in recipe_patterns:
             found = re.findall(pat, content_text, re.I)
