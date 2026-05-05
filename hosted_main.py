@@ -1842,3 +1842,21 @@ async def scan_recipe(request: Request, body: ScanRequest):
         "totalTime": recipe_data.get("totalTime"),
         "baseServings": recipe_data.get("baseServings", 4),
     }
+
+
+@app.get("/admin/api/debug/youtube")
+async def debug_youtube(url: str, x_admin_password: Optional[str] = Header(None)):
+    require_admin(x_admin_password)
+    video_id = extract_youtube_video_id(url)
+    if not video_id:
+        return {"error": "Not a YouTube URL"}
+    transcript_result = await fetch_youtube_transcript(video_id)
+    metadata_result = await fetch_youtube_metadata(url)
+    return {
+        "video_id": video_id,
+        "transcript_chars": len(transcript_result) if transcript_result else 0,
+        "transcript_sample": transcript_result[:200] if transcript_result else None,
+        "metadata_title": metadata_result.get("title"),
+        "metadata_description_chars": len(metadata_result.get("description") or ""),
+        "metadata_description_sample": (metadata_result.get("description") or "")[:200],
+    }
