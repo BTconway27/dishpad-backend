@@ -1886,6 +1886,7 @@ async def debug_youtube(url: str, x_admin_password: Optional[str] = Header(None)
     # Also test direct page scraping via mobile URL
     page_title = None
     page_desc = None
+    page_debug = []
     for _test_url, _ua in [
         (f"https://m.youtube.com/watch?v={video_id}", "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0) AppleWebKit/605.1.15 Mobile/15E148 Safari/604.1"),
         (url, "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/124.0.0.0 Safari/537.36"),
@@ -1895,13 +1896,22 @@ async def debug_youtube(url: str, x_admin_password: Optional[str] = Header(None)
                 "User-Agent": _ua, "Accept-Language": "en-US,en;q=0.9",
             }) as hc:
                 resp = await hc.get(_test_url)
-                pi = get_youtube_page_info(resp.text)
+                raw_html = resp.text
+                has_ipr = "ytInitialPlayerResponse" in raw_html
+                has_og_desc = "og:description" in raw_html
+                pi = get_youtube_page_info(raw_html)
+                page_debug.append({
+                    "url": _test_url[:50], "status": resp.status_code,
+                    "html_chars": len(raw_html), "has_ytInitialPlayerResponse": has_ipr,
+                    "has_og_description": has_og_desc, "html_snippet": raw_html[:200],
+                    "parsed_title": pi.get("title"), "parsed_desc": (pi.get("description") or "")[:100],
+                })
                 page_title = page_title or pi.get("title")
                 page_desc = page_desc or pi.get("description")
             if page_title and page_desc:
                 break
         except Exception as e:
-            page_desc = f"FAILED: {e}"
+            page_debug.append({"url": _test_url[:50], "error": str(e)[:100]})
     # Test oEmbed
     oembed_title = None
     try:
@@ -1914,11 +1924,10 @@ async def debug_youtube(url: str, x_admin_password: Optional[str] = Header(None)
     return {
         "video_id": video_id,
         "transcript_chars": len(transcript_result) if transcript_result else 0,
-        "transcript_sample": transcript_result[:200] if transcript_result else None,
         "yt_dlp_title": metadata_result.get("title") if isinstance(metadata_result, dict) else None,
         "yt_dlp_desc_chars": len(metadata_result.get("description") or "") if isinstance(metadata_result, dict) else 0,
         "page_scrape_title": page_title,
         "page_scrape_desc_chars": len(page_desc or ""),
-        "page_scrape_desc_sample": (page_desc or "")[:200],
         "oembed_title": oembed_title,
+        "page_debug": page_debug,
     }
