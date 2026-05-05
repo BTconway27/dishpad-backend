@@ -1616,10 +1616,11 @@ def _get_pinterest_source_url_sync(pin_url: str) -> Optional[str]:
     if not m:
         return None
     pin_id = m.group(1)
+    # Try Pinterest widgets API
     try:
         import urllib.request as _ur
         api_url = f"https://widgets.pinterest.com/v3/pidgets/pins/info/?pin_ids={pin_id}"
-        req = _ur.Request(api_url, headers={"User-Agent": "curl/7.79.1", "Accept": "application/json"})
+        req = _ur.Request(api_url, headers={"User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 Chrome/124.0 Safari/537.36", "Accept": "application/json"})
         resp = _ur.urlopen(req, timeout=10)
         data = json.loads(resp.read())
         pins = data.get("data", [])
@@ -1630,6 +1631,30 @@ def _get_pinterest_source_url_sync(pin_url: str) -> Optional[str]:
                 return link
     except Exception as exc:
         print(f"[Dishpad] Pinterest widgets API failed: {exc}")
+    # Try Jina AI Reader on the pin page to extract the source link
+    try:
+        import urllib.request as _ur, urllib.parse as _up
+        jreq = _ur.Request(
+            f"https://r.jina.ai/{_up.quote(pin_url, safe=':/?=&#')}",
+            headers={"Accept": "application/json", "User-Agent": "curl/7.79.1"},
+        )
+        jresp = _ur.urlopen(jreq, timeout=20)
+        jdata = json.loads(jresp.read())
+        content_text = jdata.get("data", {}).get("content") or ""
+        # Look for external recipe links in the Jina content
+        recipe_patterns = [
+            r'https?://(?!(?:www\.)?pinterest\.com)[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}/[^\s\)"'<>]{10,}(?:recipe|cook|food|eat|dish|meal|bake|ingredient)[^\s\)"'<>]*',
+            r'\[(?:Visit|Source|Original|Click|Read)[^\]]*\]\((https?://[^\)]+)\)',
+            r'https?://(?!(?:www\.)?pinterest\.com)(?:[a-zA-Z0-9.-]+\.){1,3}[a-zA-Z]{2,}/[^\s\)"'<>]{10,}',
+        ]
+        for pat in recipe_patterns:
+            found = re.findall(pat, content_text, re.I)
+            if found:
+                link = found[0] if isinstance(found[0], str) else found[0]
+                if "pinterest" not in link.lower():
+                    return link
+    except Exception as exc:
+        print(f"[Dishpad] Pinterest Jina fallback failed: {exc}")
     return None
 
 
@@ -1782,6 +1807,8 @@ async def clip_recipe(request: Request, body: ClipRequest):
         source_url = await get_pinterest_source_url(url)
         if source_url:
             url = source_url  # fall through to web path
+        else:
+            return {"error": "Couldn't find the recipe linked from that Pinterest pin. Try opening the pin, clicking through to the recipe website, and pasting that URL instead."}
 
     # ---- Standard web recipe ------------------------------------------------
     html: Optional[str] = None
