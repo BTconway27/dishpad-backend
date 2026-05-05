@@ -1850,13 +1850,44 @@ async def debug_youtube(url: str, x_admin_password: Optional[str] = Header(None)
     video_id = extract_youtube_video_id(url)
     if not video_id:
         return {"error": "Not a YouTube URL"}
-    transcript_result = await fetch_youtube_transcript(video_id)
-    metadata_result = await fetch_youtube_metadata(url)
+    transcript_result, metadata_result = await asyncio.gather(
+        fetch_youtube_transcript(video_id),
+        fetch_youtube_metadata(url),
+        return_exceptions=True,
+    )
+    if isinstance(transcript_result, Exception): transcript_result = None
+    if isinstance(metadata_result, Exception): metadata_result = {}
+    # Also test direct page scraping
+    page_title = None
+    page_desc = None
+    try:
+        async with httpx.AsyncClient(follow_redirects=True, timeout=15.0, headers={
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/124.0.0.0 Safari/537.36",
+            "Accept-Language": "en-US,en;q=0.9",
+        }) as hc:
+            resp = await hc.get(url)
+            pi = get_youtube_page_info(resp.text)
+            page_title = pi.get("title")
+            page_desc = pi.get("description")
+    except Exception as e:
+        page_desc = f"FAILED: {e}"
+    # Test oEmbed
+    oembed_title = None
+    try:
+        import urllib.parse
+        async with httpx.AsyncClient(timeout=10.0) as hc:
+            oe = await hc.get(f"https://www.youtube.com/oembed?url={urllib.parse.quote(url)}&format=json")
+            oembed_title = oe.json().get("title")
+    except Exception as e:
+        oembed_title = f"FAILED: {e}"
     return {
         "video_id": video_id,
         "transcript_chars": len(transcript_result) if transcript_result else 0,
         "transcript_sample": transcript_result[:200] if transcript_result else None,
-        "metadata_title": metadata_result.get("title"),
-        "metadata_description_chars": len(metadata_result.get("description") or ""),
-        "metadata_description_sample": (metadata_result.get("description") or "")[:200],
+        "yt_dlp_title": metadata_result.get("title") if isinstance(metadata_result, dict) else None,
+        "yt_dlp_desc_chars": len(metadata_result.get("description") or "") if isinstance(metadata_result, dict) else 0,
+        "page_scrape_title": page_title,
+        "page_scrape_desc_chars": len(page_desc or ""),
+        "page_scrape_desc_sample": (page_desc or "")[:200],
+        "oembed_title": oembed_title,
     }
