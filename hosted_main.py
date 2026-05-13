@@ -333,6 +333,7 @@ class ScanRequest(BaseModel):
 class CreateIntentRequest(BaseModel):
     email: str
     name: str = ""
+    idempotency_key: Optional[str] = None
 
 
 class ActivateProRequest(BaseModel):
@@ -470,15 +471,23 @@ async def create_payment_intent(request: Request, body: CreateIntentRequest):
     email = body.email.strip().lower()
     if not email or "@" not in email:
         raise HTTPException(status_code=400, detail="Valid email is required")
+    # Safety net: if already Pro, return success without creating a new charge
+    if is_email_pro(email):
+        return {"client_secret": None, "payment_intent_id": None, "already_pro": True}
+
+    create_kwargs: dict = dict(
+        amount=PRICE_CENTS,
+        currency="usd",
+        receipt_email=email,
+        metadata={"email": email, "name": body.name.strip()},
+        description="Dishpad Pro — Lifetime",
+    )
     try:
-        intent = stripe.PaymentIntent.create(
-            amount=PRICE_CENTS,
-            currency="usd",
-            receipt_email=email,
-            metadata={"email": email, "name": body.name.strip()},
-            description="Dishpad Pro — Lifetime",
-        )
-        return {"client_secret": intent.client_secret, "payment_intent_id": intent.id}
+        if body.idempotency_key:
+            intent = stripe.PaymentIntent.create(**create_kwargs, idempotency_key=body.idempotency_key)
+        else:
+            intent = stripe.PaymentIntent.create(**create_kwargs)
+        return {"client_secret": intent.client_secret, "payment_intent_id": intent.id, "already_pro": False}
     except stripe.StripeError as e:
         raise HTTPException(status_code=400, detail=str(getattr(e, "user_message", str(e))))
 
